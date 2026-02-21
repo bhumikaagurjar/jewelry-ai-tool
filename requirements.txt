@@ -9,3 +9,5 @@ scikit-learn
 tqdm
 datasets
 matplotlib
+plotly
+requests
