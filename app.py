@@ -31,7 +31,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # ------------------------------
-# 1. PAGE CONFIGURATION (MUST BE FIRST)
+# 1. GOOGLE SHEETS INTEGRATION
+# ------------------------------
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# ------------------------------
+# 2. PAGE CONFIGURATION (MUST BE FIRST)
 # ------------------------------
 st.set_page_config(
     page_title="Kanishka Jewellers Pvt Ltd - Design Studio", 
@@ -41,7 +47,7 @@ st.set_page_config(
 )
 
 # ------------------------------
-# 2. CLOUDINARY CONFIGURATION (USING STREAMLIT SECRETS)
+# 3. CLOUDINARY CONFIGURATION (USING STREAMLIT SECRETS)
 # ------------------------------
 try:
     cloudinary.config(
@@ -55,20 +61,147 @@ except Exception:
     st.warning("⚠️ Cloudinary is not configured. Images will be saved locally.")
 
 # ------------------------------
-# 3. EMAIL & SECURITY CONFIGURATION
+# 4. GOOGLE SHEETS CONNECTION
+# ------------------------------
+@st.cache_resource
+def get_google_sheets_connection():
+    """Connect to Google Sheets using service account credentials"""
+    try:
+        # Get credentials from secrets
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        
+        # Load credentials from secrets JSON
+        creds_dict = {
+            "type": st.secrets["GCP_TYPE"],
+            "project_id": st.secrets["GCP_PROJECT_ID"],
+            "private_key_id": st.secrets["GCP_PRIVATE_KEY_ID"],
+            "private_key": st.secrets["GCP_PRIVATE_KEY"],
+            "client_email": st.secrets["GCP_CLIENT_EMAIL"],
+            "client_id": st.secrets["GCP_CLIENT_ID"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": st.secrets["GCP_CLIENT_X509_CERT_URL"]
+        }
+        
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # Open the spreadsheet (create if not exists)
+        sheet_name = "Kanishka_Designs"
+        try:
+            sheet = client.open(sheet_name).sheet1
+        except:
+            # Create new spreadsheet if not exists
+            sheet = client.create(sheet_name).sheet1
+            # Add headers
+            headers = ['Design_No', 'Design_Name', 'Category', 'Metal_Type', 'Stone_Type', 'Image_URLs', 'Date_Added', 'Status']
+            sheet.append_row(headers)
+        
+        return sheet
+    except Exception as e:
+        st.error(f"Google Sheets connection failed: {e}")
+        return None
+
+# ------------------------------
+# 5. GOOGLE SHEETS DATA FUNCTIONS
+# ------------------------------
+def load_designs_from_sheets(sheet):
+    """Load all designs from Google Sheets into DataFrame"""
+    try:
+        if sheet is None:
+            return pd.DataFrame()
+        
+        records = sheet.get_all_records()
+        if records:
+            df = pd.DataFrame(records)
+            # Ensure required columns exist
+            required_cols = ['Design_No', 'Design_Name', 'Category', 'Metal_Type', 'Stone_Type', 'Image_URLs', 'Date_Added', 'Status']
+            for col in required_cols:
+                if col not in df.columns:
+                    df[col] = ""
+            return df
+        else:
+            # Return empty DataFrame with correct columns
+            return pd.DataFrame(columns=['Design_No', 'Design_Name', 'Category', 'Metal_Type', 'Stone_Type', 'Image_URLs', 'Date_Added', 'Status'])
+    except Exception as e:
+        st.error(f"Error loading designs from Google Sheets: {e}")
+        return pd.DataFrame()
+
+def save_design_to_sheets(sheet, design_no, design_name, category, metal_type, stone_type, image_urls, status):
+    """Save a single design to Google Sheets"""
+    try:
+        if sheet is None:
+            return False
+        
+        date_added = datetime.now().strftime("%Y-%m-%d")
+        # Join multiple image URLs with comma
+        urls_str = ','.join(image_urls) if isinstance(image_urls, list) else image_urls
+        
+        new_row = [design_no, design_name, category, metal_type, stone_type, urls_str, date_added, status]
+        sheet.append_row(new_row)
+        return True
+    except Exception as e:
+        st.error(f"Error saving design to Google Sheets: {e}")
+        return False
+
+def update_design_in_sheets(sheet, design_no, design_name, category, metal_type, stone_type, image_urls, status):
+    """Update an existing design in Google Sheets"""
+    try:
+        if sheet is None:
+            return False
+        
+        # Find the row
+        cells = sheet.findall(design_no)
+        if cells:
+            row_num = cells[0].row
+            urls_str = ','.join(image_urls) if isinstance(image_urls, list) else image_urls
+            date_added = datetime.now().strftime("%Y-%m-%d")
+            
+            # Update row
+            sheet.update(f'A{row_num}', [[design_no]])
+            sheet.update(f'B{row_num}', [[design_name]])
+            sheet.update(f'C{row_num}', [[category]])
+            sheet.update(f'D{row_num}', [[metal_type]])
+            sheet.update(f'E{row_num}', [[stone_type]])
+            sheet.update(f'F{row_num}', [[urls_str]])
+            sheet.update(f'G{row_num}', [[date_added]])
+            sheet.update(f'H{row_num}', [[status]])
+        return True
+    except Exception as e:
+        st.error(f"Error updating design in Google Sheets: {e}")
+        return False
+
+def delete_design_from_sheets(sheet, design_no):
+    """Delete a design from Google Sheets"""
+    try:
+        if sheet is None:
+            return False
+        
+        cells = sheet.findall(design_no)
+        if cells:
+            row_num = cells[0].row
+            sheet.delete_rows(row_num)
+        return True
+    except Exception as e:
+        st.error(f"Error deleting design from Google Sheets: {e}")
+        return False
+
+# ------------------------------
+# 6. EMAIL & SECURITY CONFIGURATION
 # ------------------------------
 EMAIL_CONFIG = {
     "smtp_server": "smtp.gmail.com",
     "smtp_port": 587,
     "sender_email": "kanishkajewellers@gmail.com",
-    "sender_password": "your_app_password"
+    "sender_password": st.secrets["EMAIL_PASSWORD"] if "EMAIL_PASSWORD" in st.secrets else "your_app_password"
 }
 
 PASSWORD_FILE = "excel_data/admin_password.json"
 OTP_FILE = "excel_data/otp_storage.json"
 
 # ------------------------------
-# 4. THEME & UI INITIALIZATION
+# 7. THEME & UI INITIALIZATION (DARK THEME ONLY - NO TOGGLE)
 # ------------------------------
 if 'theme' not in st.session_state:
     st.session_state.theme = "🌙 Dark Theme"
@@ -92,7 +225,7 @@ with col2:
 st.markdown("<hr style='border: 1px solid #D4AF37; opacity: 0.3;'>", unsafe_allow_html=True)
 
 # ------------------------------
-# 5. HELPER FUNCTIONS
+# 8. HELPER FUNCTIONS
 # ------------------------------
 def get_base64_logo():
     if os.path.exists("header_logo_1764154359.png"):
@@ -219,7 +352,7 @@ os.makedirs("excel_data", exist_ok=True)
 os.makedirs("temp_uploads", exist_ok=True)
 
 # ------------------------------
-# 6. CLOUDINARY IMAGE HANDLING FUNCTIONS
+# 9. CLOUDINARY IMAGE HANDLING FUNCTIONS
 # ------------------------------
 def upload_to_cloudinary(uploaded_file, design_no, angle_index):
     if not CLOUDINARY_CONFIGURED:
@@ -312,7 +445,7 @@ def load_image(design_no, index=0):
     return None
 
 # ------------------------------
-# 7. AI & SIMILARITY FUNCTIONS
+# 10. AI & SIMILARITY FUNCTIONS
 # ------------------------------
 @st.cache_resource
 def load_expert_detector():
@@ -348,41 +481,37 @@ def get_category_color(category):
     return CATEGORY_COLORS.get(category, CATEGORY_COLORS["Other"])
 
 # ------------------------------
-# 8. DATA MANAGEMENT
+# 11. DATA MANAGEMENT (Google Sheets)
 # ------------------------------
-def save_data():
-    data_file = "excel_data/designs.pkl"
-    st.session_state.designs_df.to_pickle(data_file)
+# Initialize Google Sheets connection and load data
+sheet = get_google_sheets_connection()
+designs_df = load_designs_from_sheets(sheet)
 
-# Initialize session state
 if 'designs_df' not in st.session_state:
-    data_file = "excel_data/designs.pkl"
-    if os.path.exists(data_file):
-        st.session_state.designs_df = pd.read_pickle(data_file)
-    else:
-        sample_data = {
-            'Design_No': ['R001', 'R002', 'R003', 'R004', 'R005'],
-            'Design_Name': ['Solitaire Ring', 'Halo Ring', 'Vintage Ring', 'Modern Ring', 'Classic Band'],
-            'Category': ['Ring', 'Ring', 'Ring', 'Ring', 'Ring'],
-            'Metal_Type': ['Gold', 'Gold', 'Silver', 'Gold', 'Silver'],
-            'Stone_Type': ['Diamond', 'Diamond', 'None', 'None', 'None'],
-            'Date_Added': [datetime.now().strftime("%Y-%m-%d") for _ in range(5)],
-            'Status': ['Active'] * 5
-        }
-        st.session_state.designs_df = pd.DataFrame(sample_data)
-    
+    st.session_state.designs_df = designs_df if not designs_df.empty else pd.DataFrame(columns=['Design_No', 'Design_Name', 'Category', 'Metal_Type', 'Stone_Type', 'Image_URLs', 'Date_Added', 'Status'])
+
+# Initialize session state for categories, metals, stones
+if 'categories' not in st.session_state:
     st.session_state.categories = ['Ring', 'Necklace', 'Earring', 'Bracelet', 'Pendant', 'Brooch', 'Cufflink', 'Other']
+if 'metal_types' not in st.session_state:
     st.session_state.metal_types = ['Gold', 'Silver', 'Platinum', 'Rose Gold', 'White Gold']
+if 'stone_types' not in st.session_state:
     st.session_state.stone_types = ['Diamond', 'Emerald', 'Ruby', 'Sapphire', 'Pearl', 'Opal', 'Jade', 'None', 'Other']
+if 'expert_mode' not in st.session_state:
     st.session_state.expert_mode = True if EXPERT_AVAILABLE else False
+if 'password_correct' not in st.session_state:
     st.session_state.password_correct = False
+if 'forgot_password' not in st.session_state:
     st.session_state.forgot_password = False
+if 'otp_sent' not in st.session_state:
     st.session_state.otp_sent = False
+if 'otp_verified' not in st.session_state:
     st.session_state.otp_verified = False
+if 'generated_otp' not in st.session_state:
     st.session_state.generated_otp = ""
 
 # ------------------------------
-# 9. AUTHENTICATION & UI HELPERS
+# 12. AUTHENTICATION & UI HELPERS
 # ------------------------------
 def check_password():
     if st.session_state.password_correct:
@@ -457,40 +586,13 @@ def display_contact():
         """, unsafe_allow_html=True)
 
 # ------------------------------
-# 10. MAIN APP
+# 13. MAIN APP
 # ------------------------------
 def main():
-    # Sidebar
+    # Sidebar - NO THEME SELECTOR
     with st.sidebar:
         if os.path.exists("header_logo_1764154359.png"):
             st.image("header_logo_1764154359.png", use_container_width=True)
-        
-        # Theme selector
-        st.markdown("### 🎨 Theme")
-        theme = st.radio(
-            "Select Theme",
-            ["🌙 Dark Theme", "☀️ Light Theme"],
-            index=0 if st.session_state.theme == "🌙 Dark Theme" else 1,
-            key="theme_selector",
-            horizontal=True
-        )
-        if theme != st.session_state.theme:
-            if theme == "☀️ Light Theme":
-                st.session_state.bg_color = "#FFFFFF"
-                st.session_state.card_bg = "#F8F8F8"
-                st.session_state.text_color = "#333333"
-                st.session_state.border_color = "#E0E0E0"
-                st.session_state.accent_gold = "#D4AF37"
-                st.session_state.accent_purple = "#5E2A84"
-            else:
-                st.session_state.bg_color = "#1A2634"
-                st.session_state.card_bg = "#0F1A24"
-                st.session_state.text_color = "#FFFFFF"
-                st.session_state.border_color = "#2A3A4A"
-                st.session_state.accent_gold = "#D4AF37"
-                st.session_state.accent_purple = "#9D7EBD"
-            st.session_state.theme = theme
-            st.rerun()
         
         st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
         
@@ -514,9 +616,6 @@ def main():
             active_count = len(st.session_state.designs_df[st.session_state.designs_df['Status'] == 'Active'])
             st.metric("Active", f"{active_count:,}")
         
-        image_count = len([f for f in os.listdir("images") if f.endswith(('.jpg', '.jpeg', '.png'))])
-        st.metric("Images", f"{image_count:,}")
-        
         # AI Mode
         if EXPERT_AVAILABLE:
             st.markdown("### 🔬 AI Mode")
@@ -525,20 +624,7 @@ def main():
         
         # Database status
         st.markdown("### 💾 Database Status")
-        if st.session_state.expert_mode and EXPERT_AVAILABLE:
-            embeddings_dict = load_expert_embeddings()
-            if embeddings_dict:
-                st.success(f"✅ Expert embeddings: {len(embeddings_dict):,} designs")
-            else:
-                st.warning("⚠️ No expert embeddings found")
-                if st.button("🚀 Generate Expert Embeddings", key="gen_embeddings_btn", use_container_width=True):
-                    detector = load_expert_detector()
-                    if detector:
-                        with st.spinner("🔬 Running expert analysis..."):
-                            detector.process_all_designs("images")
-                        st.success("✅ Expert embeddings generated!")
-                        st.cache_data.clear()
-                        st.rerun()
+        st.success("✅ Data stored in Google Sheets (permanent)")
         
         st.markdown("### 📞 Contact")
         st.caption(f"📱 {COMPANY_PHONE}")
@@ -695,8 +781,8 @@ def main():
             </div>
             """, unsafe_allow_html=True)
             
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                "➕ Add Design", "✏️ Edit Design", "🗑️ Delete Design", "📊 Categories", "🪨 Stones", "📁 Bulk Upload", "🔬 AI Training"
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "➕ Add Design", "✏️ Edit Design", "🗑️ Delete Design", "📊 Categories", "🪙 Metals", "🪨 Stones", "📁 Bulk Upload", "🔬 AI Training"
             ])
             
             with tab1:
@@ -723,22 +809,19 @@ def main():
                 if st.button("💾 Save Design", key="save_design_btn", use_container_width=True):
                     if new_design_no and new_design_name and new_images:
                         if new_design_no not in st.session_state.designs_df['Design_No'].values:
+                            # Upload to Cloudinary
                             if CLOUDINARY_CONFIGURED:
-                                upload_multiple_images(new_images, new_design_no)
+                                image_urls = upload_multiple_images(new_images, new_design_no)
                             else:
                                 save_local_images(new_images, new_design_no)
+                                image_urls = []
                             
-                            new_row = pd.DataFrame({
-                                'Design_No': [new_design_no],
-                                'Design_Name': [new_design_name],
-                                'Category': [new_category],
-                                'Metal_Type': [new_metal],
-                                'Stone_Type': [new_stone],
-                                'Date_Added': [new_date],
-                                'Status': [new_status]
-                            })
-                            st.session_state.designs_df = pd.concat([st.session_state.designs_df, new_row], ignore_index=True)
-                            save_data()
+                            # Save to Google Sheets
+                            save_design_to_sheets(sheet, new_design_no, new_design_name, new_category, new_metal, new_stone, image_urls, new_status)
+                            
+                            # Reload data
+                            st.session_state.designs_df = load_designs_from_sheets(sheet)
+                            
                             st.markdown('<div class="success-msg">✅ Design added successfully!</div>', unsafe_allow_html=True)
                             time.sleep(2)
                             st.rerun()
@@ -777,18 +860,22 @@ def main():
                         if remaining_slots > 0:
                             additional_images = st.file_uploader(f"Add up to {remaining_slots} more images", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True, key=f"edit_images_{design_to_edit}")
                     if st.button("💾 Update Design", key=f"update_btn_{design_to_edit}", use_container_width=True):
-                        idx = st.session_state.designs_df[st.session_state.designs_df['Design_No'] == design_to_edit].index[0]
-                        st.session_state.designs_df.at[idx, 'Design_Name'] = edit_name
-                        st.session_state.designs_df.at[idx, 'Category'] = edit_category
-                        st.session_state.designs_df.at[idx, 'Metal_Type'] = edit_metal
-                        st.session_state.designs_df.at[idx, 'Stone_Type'] = edit_stone
-                        st.session_state.designs_df.at[idx, 'Status'] = edit_status
+                        # Update images if new ones added
+                        new_image_urls = design_data.get('Image_URLs', '')
                         if additional_images and remaining_slots > 0:
                             if CLOUDINARY_CONFIGURED:
-                                upload_multiple_images(additional_images[:remaining_slots], design_to_edit)
+                                new_urls = upload_multiple_images(additional_images[:remaining_slots], design_to_edit)
+                                existing_urls = new_image_urls.split(',') if new_image_urls else []
+                                new_image_urls = ','.join(existing_urls + new_urls)
                             else:
                                 save_local_images(additional_images[:remaining_slots], design_to_edit)
-                        save_data()
+                        
+                        # Update in Google Sheets
+                        update_design_in_sheets(sheet, design_to_edit, edit_name, edit_category, edit_metal, edit_stone, new_image_urls, edit_status)
+                        
+                        # Reload data
+                        st.session_state.designs_df = load_designs_from_sheets(sheet)
+                        
                         st.markdown('<div class="success-msg">✅ Design updated!</div>', unsafe_allow_html=True)
                         time.sleep(2)
                         st.rerun()
@@ -809,14 +896,20 @@ def main():
                     st.warning(f"⚠️ You are about to delete: {design_to_delete} - {design_data['Design_Name']}")
                     confirm = st.checkbox("I confirm this deletion", key=f"confirm_delete_{design_to_delete}")
                     if confirm and st.button("🗑️ Permanently Delete", key=f"delete_btn_{design_to_delete}", use_container_width=True):
+                        # Delete from Cloudinary
                         if CLOUDINARY_CONFIGURED:
                             delete_from_cloudinary(design_to_delete)
                         else:
                             for img_path in images:
                                 if os.path.exists(img_path):
                                     os.remove(img_path)
-                        st.session_state.designs_df = st.session_state.designs_df[st.session_state.designs_df['Design_No'] != design_to_delete]
-                        save_data()
+                        
+                        # Delete from Google Sheets
+                        delete_design_from_sheets(sheet, design_to_delete)
+                        
+                        # Reload data
+                        st.session_state.designs_df = load_designs_from_sheets(sheet)
+                        
                         st.markdown('<div class="success-msg">✅ Design deleted!</div>', unsafe_allow_html=True)
                         time.sleep(2)
                         st.rerun()
@@ -844,8 +937,48 @@ def main():
                                 st.success(f"✅ Category removed!")
                                 st.rerun()
             
-            # NEW TAB: Manage Stones
+            # NEW TAB: Manage Metals
             with tab5:
+                st.markdown("### Manage Metals")
+                st.markdown("Add or remove metal types for your designs")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_metal = st.text_input("New Metal Type", key="new_metal_input")
+                    if st.button("➕ Add Metal", key="add_metal_btn"):
+                        if new_metal and new_metal not in st.session_state.metal_types:
+                            st.session_state.metal_types.append(new_metal)
+                            st.success(f"✅ Metal '{new_metal}' added!")
+                            st.rerun()
+                        elif new_metal in st.session_state.metal_types:
+                            st.warning("Metal type already exists")
+                        else:
+                            st.error("Please enter a metal type")
+                
+                with col2:
+                    if st.session_state.metal_types:
+                        removable_metals = [m for m in st.session_state.metal_types]
+                        if removable_metals:
+                            metal_to_remove = st.selectbox("Select Metal to Remove", removable_metals, key="remove_metal_select")
+                            if st.button("❌ Remove Metal", key="remove_metal_btn"):
+                                in_use = len(st.session_state.designs_df[st.session_state.designs_df['Metal_Type'] == metal_to_remove]) > 0
+                                if in_use:
+                                    st.error(f"Cannot remove '{metal_to_remove}' - it is assigned to existing designs")
+                                else:
+                                    st.session_state.metal_types.remove(metal_to_remove)
+                                    st.success(f"✅ Metal '{metal_to_remove}' removed!")
+                                    st.rerun()
+                        else:
+                            st.info("No removable metals")
+                    else:
+                        st.info("No metals available")
+                
+                # Display current metals
+                st.markdown("### 📋 Current Metal Types")
+                st.markdown(", ".join(st.session_state.metal_types))
+            
+            # Tab 6: Manage Stones
+            with tab6:
                 st.markdown("### Manage Stones")
                 st.markdown("Add or remove stone types for your designs")
                 
@@ -864,7 +997,6 @@ def main():
                 
                 with col2:
                     if st.session_state.stone_types:
-                        # Exclude 'None' from removal as it's a special value
                         removable_stones = [s for s in st.session_state.stone_types if s != 'None']
                         if removable_stones:
                             stone_to_remove = st.selectbox("Select Stone to Remove", removable_stones, key="remove_stone_select")
@@ -885,7 +1017,7 @@ def main():
                 st.markdown("### 📋 Current Stone Types")
                 st.markdown(", ".join(st.session_state.stone_types))
             
-            with tab6:
+            with tab7:
                 st.markdown("### Bulk Upload Images")
                 bulk_images = st.file_uploader("Select multiple images (name as design_angle.jpg)", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True, key="bulk_upload")
                 if bulk_images:
@@ -906,7 +1038,7 @@ def main():
                         st.success(f"✅ {len(bulk_images)} images uploaded!")
                         st.rerun()
             
-            with tab7:
+            with tab8:
                 st.markdown("### 🔬 AI Model Training")
                 if EXPERT_AVAILABLE:
                     if st.button("🚀 Run Expert Analysis", key="run_expert_btn", use_container_width=True):

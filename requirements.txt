@@ -11,3 +11,6 @@ datasets
 matplotlib
 plotly
 requests
+cloudinary
+gspread
+oauth2client
